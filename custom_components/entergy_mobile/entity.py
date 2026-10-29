@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, friendly_account_name
 from .coordinator import EntergyDataUpdateCoordinator
 
 
@@ -25,7 +25,7 @@ class EntergyEntity(CoordinatorEntity[EntergyDataUpdateCoordinator]):
         self._account_id = account_id
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, account_id)},
-            name=f"Entergy Account {account_id}",
+            name=friendly_account_name(account_id),
             manufacturer="Entergy",
             model="Entergy",
         )

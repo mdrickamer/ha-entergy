@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from aiohttp import ClientError
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
@@ -18,6 +20,8 @@ from .const import (
     DEFAULT_LANGUAGE,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
+    friendly_account_name,
+    normalize_scan_interval_seconds,
 )
 from .coordinator import EntergyDataUpdateCoordinator
 
@@ -31,9 +35,35 @@ def get_coordinator(hass: HomeAssistant, entry: ConfigEntry) -> EntergyDataUpdat
     return hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
 
+def _prepared_entry_updates(
+    entry: ConfigEntry,
+) -> tuple[int, dict[str, object]]:
+    """Return the safe poll interval and any entry fields that should be migrated."""
+    account_id = str(entry.data[CONF_ACCOUNT_ID])
+    raw_interval = entry.options.get(CONF_SCAN_INTERVAL_SECONDS, DEFAULT_SCAN_INTERVAL_SECONDS)
+    scan_interval = normalize_scan_interval_seconds(raw_interval)
+    updates: dict[str, object] = {}
+
+    if raw_interval != scan_interval:
+        updates["options"] = {**entry.options, CONF_SCAN_INTERVAL_SECONDS: scan_interval}
+        _LOGGER.info(
+            "Entergy poll interval is outside the allowed range; using %s seconds",
+            scan_interval,
+        )
+
+    if entry.title in {f"Entergy {account_id}", account_id}:
+        updates["title"] = friendly_account_name(account_id)
+
+    return scan_interval, updates
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Entergy from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+
+    scan_interval, updates = _prepared_entry_updates(entry)
+    if updates:
+        hass.config_entries.async_update_entry(entry, **updates)
 
     session = async_get_clientsession(hass)
     client = EntergyApiClient(
@@ -41,6 +71,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         username=entry.data[CONF_USERNAME],
         password=entry.data[CONF_PASSWORD],
         language=entry.data.get(CONF_LANGUAGE, DEFAULT_LANGUAGE),
+        extra_secrets=(str(entry.data[CONF_ACCOUNT_ID]),),
     )
 
     try:
@@ -50,16 +81,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryAuthFailed(str(err)) from err
     except EntergyAuthError as err:
         raise ConfigEntryAuthFailed(str(err)) from err
-    except EntergyApiError as err:
-        raise ConfigEntryNotReady(str(err)) from err
-
-    scan_interval = int(entry.options.get(CONF_SCAN_INTERVAL_SECONDS, DEFAULT_SCAN_INTERVAL_SECONDS))
+    except (EntergyApiError, ClientError, TimeoutError) as err:
+        _LOGGER.debug("Entergy setup cannot connect: %s", client.redact(err))
+        raise ConfigEntryNotReady("Could not connect to Entergy") from None
 
     coordinator = EntergyDataUpdateCoordinator(
         hass=hass,
         client=client,
-        account_id=entry.data[CONF_ACCOUNT_ID],
+        account_id=str(entry.data[CONF_ACCOUNT_ID]),
         entry_id=entry.entry_id,
+        config_entry=entry,
         scan_interval_seconds=scan_interval,
     )
     await coordinator.async_initialize()

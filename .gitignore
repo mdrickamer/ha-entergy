@@ -1,5 +1,7 @@
 __pycache__/
 *.py[cod]
+.venv/
+.pytest_cache/
 
 # Local handoff / agent context files
 SKILL*.md

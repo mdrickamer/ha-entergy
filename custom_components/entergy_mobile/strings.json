@@ -17,6 +17,13 @@
         "data": {
           "account_id": "Account"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Entergy",
+        "description": "Entergy rejected the password for {username}. Enter the current password. The existing account, sensors, and energy statistics are kept.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -24,16 +31,21 @@
       "invalid_auth": "Invalid username or password.",
       "mfa_required": "Entergy requested an additional login step that this integration does not support yet.",
       "no_accounts": "Login worked, but no accounts were returned.",
+      "account_missing": "That password signed in, but it does not have access to the account already configured for this entry.",
       "unknown": "Unexpected error."
+    },
+    "abort": {
+      "reauth_successful": "Password updated. Entergy polling will resume and existing statistics are kept.",
+      "already_configured": "This Entergy account is already configured."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Entergy Options",
-        "description": "Control how often Entergy usage data is pulled.",
+        "description": "Control how often Entergy usage data is pulled. The minimum interval is 900 seconds (15 minutes).",
         "data": {
-          "scan_interval_seconds": "Data update interval in seconds"
+          "scan_interval_seconds": "Data update interval in seconds (minimum 900)"
         }
       }
     }

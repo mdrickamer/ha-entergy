@@ -1,0 +1,2 @@
+# Test-only dependencies. The integration itself has no runtime requirements.
+pytest-homeassistant-custom-component==0.13.375

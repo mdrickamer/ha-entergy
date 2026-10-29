@@ -19,6 +19,7 @@ from .const import (
     LOGOUT_URL,
     WEEKLY_USAGE_URL,
 )
+from .redact import redact_text
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class EntergyApiClient:
         app_version: str = DEFAULT_APP_VERSION,
         language: str = DEFAULT_LANGUAGE,
         timeout_seconds: int = 30,
+        extra_secrets: tuple[str, ...] = (),
     ) -> None:
         self._session = session
         self._username = username
@@ -61,6 +63,7 @@ class EntergyApiClient:
         self._app_version = app_version
         self._language = language
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        self._extra_secrets = tuple(secret for secret in extra_secrets if secret)
         self._client_id: str | None = None
         self._access_token: str | None = None
 
@@ -74,6 +77,21 @@ class EntergyApiClient:
         """Return the current access token."""
         return self._access_token
 
+    def secrets(self) -> tuple[str, ...]:
+        """Return values that must never be written to logs."""
+        values = (
+            self._username,
+            self._password,
+            self._access_token,
+            self._client_id,
+            *self._extra_secrets,
+        )
+        return tuple(value for value in values if value)
+
+    def redact(self, value: Any) -> str:
+        """Redact secrets from a value before it is logged."""
+        return redact_text(value, self.secrets())
+
     async def async_initialize(self) -> None:
         """Initialize client metadata required by the Entergy API."""
         self._client_id = await self.async_get_client_id()
@@ -81,12 +99,12 @@ class EntergyApiClient:
     async def async_get_client_id(self) -> str:
         """Fetch clientId from /api/app."""
         _LOGGER.debug("Fetching Entergy app config")
-        async with self._session.get(APP_CONFIG_URL, timeout=self._timeout) as resp:
-            body = await self._read_body(resp)
-            if resp.status >= 400:
-                raise EntergyApiError(f"Could not fetch app config: HTTP {resp.status}")
-            if not isinstance(body, dict):
-                raise EntergyApiError("Unexpected app config response")
+        status, body = await self._send("GET", APP_CONFIG_URL)
+        if status >= 400:
+            self._debug_response("app config", status, body)
+            raise EntergyApiError(f"Could not fetch app config: HTTP {status}")
+        if not isinstance(body, dict):
+            raise EntergyApiError("Unexpected app config response")
 
         client_id = body.get("clientId")
         if not client_id:
@@ -94,6 +112,7 @@ class EntergyApiClient:
             if isinstance(data, dict):
                 client_id = data.get("clientId")
         if not client_id:
+            self._debug_response("app config", status, body)
             raise EntergyApiError("clientId missing from /api/app response")
         _LOGGER.debug("Fetched Entergy app config with clientId present")
         return str(client_id)
@@ -129,6 +148,22 @@ class EntergyApiClient:
         except Exception:
             return text
 
+    def _debug_response(self, action: str, status: int, body: Any) -> None:
+        """Log a response body at debug level with secrets removed."""
+        _LOGGER.debug("Entergy %s response HTTP %s: %s", action, status, self.redact(body))
+
+    async def _send(self, method: str, url: str, **kwargs: Any) -> tuple[int, Any]:
+        """Perform one HTTP request and hide network details from raised errors."""
+        _LOGGER.debug("Requesting Entergy API: %s %s", method, self.redact(url))
+        try:
+            async with self._session.request(method, url, timeout=self._timeout, **kwargs) as resp:
+                body = await self._read_body(resp)
+                status = resp.status
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Entergy network error during %s: %s", method, self.redact(err))
+            raise EntergyApiError("Could not reach Entergy") from None
+        return status, body
+
     async def async_login(self) -> EntergyLoginResult:
         """Login and store the returned access token."""
         if not self._client_id:
@@ -137,20 +172,20 @@ class EntergyApiClient:
         payload = {"username": self._username, "password": self._password}
         _LOGGER.debug("Logging in to Entergy API")
 
-        async with self._session.post(
+        status, body = await self._send(
+            "POST",
             LOGIN_URL,
             params=self._params(),
             headers={**self._headers("0"), "Content-Type": "application/json"},
             json=payload,
-            timeout=self._timeout,
-        ) as resp:
-            body = await self._read_body(resp)
-            status = resp.status
+        )
 
         if status in (401, 403):
+            self._debug_response("login", status, body)
             raise EntergyAuthError(f"Login failed: HTTP {status}")
         if status >= 400:
-            raise EntergyApiError(f"Login failed: HTTP {status}: {str(body)[:300]}")
+            self._debug_response("login", status, body)
+            raise EntergyApiError(f"Login failed: HTTP {status}")
         if not isinstance(body, dict):
             raise EntergyApiError("Unexpected login response")
 
@@ -160,7 +195,8 @@ class EntergyApiClient:
 
         next_action = login_data.get("nextAction") or body.get("nextAction")
         if next_action:
-            raise EntergyMfaRequired(f"Login requires unsupported nextAction: {next_action}")
+            _LOGGER.debug("Entergy login next action: %s", self.redact(next_action))
+            raise EntergyMfaRequired("Login requires an unsupported additional authentication step")
 
         token = (
             login_data.get("accessToken")
@@ -171,6 +207,7 @@ class EntergyApiClient:
             or body.get("token")
         )
         if not token:
+            self._debug_response("login", status, body)
             raise EntergyAuthError("Login response did not contain an access token")
 
         self._access_token = str(token)
@@ -182,15 +219,14 @@ class EntergyApiClient:
         if not self._client_id:
             return
         try:
-            async with self._session.post(
+            await self._send(
+                "POST",
                 LOGOUT_URL,
                 params=self._params(),
                 headers=self._headers(),
-                timeout=self._timeout,
-            ):
-                pass
-        except Exception as err:
-            _LOGGER.debug("Logout failed: %s", err)
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Logout failed: %s", self.redact(err))
 
     async def _request_json(
         self,
@@ -205,26 +241,24 @@ class EntergyApiClient:
         if not self._access_token:
             await self.async_login()
 
-        _LOGGER.debug("Requesting Entergy API: %s %s", method, url)
-        async with self._session.request(
+        status, body = await self._send(
             method,
             url,
             params=self._params(params),
             headers=self._headers(),
-            timeout=self._timeout,
-        ) as resp:
-            body = await self._read_body(resp)
-            status = resp.status
+        )
 
         if status == 401 and retry_auth:
-            _LOGGER.debug("Entergy API returned 401; refreshing login and retrying")
+            _LOGGER.debug("Entergy API returned 401; refreshing login and retrying once")
             await self.async_login()
             return await self._request_json(method, url, params=params, retry_auth=False)
 
         if status in (401, 403):
+            self._debug_response("request", status, body)
             raise EntergyAuthError(f"Unauthorized: HTTP {status}")
         if status >= 400:
-            raise EntergyApiError(f"API request failed: HTTP {status}: {str(body)[:300]}")
+            self._debug_response("request", status, body)
+            raise EntergyApiError(f"API request failed: HTTP {status}")
         return body
 
     async def async_get_accounts(self) -> Any:
