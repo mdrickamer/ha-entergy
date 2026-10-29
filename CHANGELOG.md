@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Call Entergy at `https://mobileapp.api-prod.entergy.com/api` and report app version 3.63.0, matching the current official Android app. The previous host, `prod.entergy.mindgrb.io`, is no longer used. This host change has not been confirmed with a live login. One real sign-in is needed to verify the new host serves the same API.
+
 ## 0.2.0
 
 - Stop polling and start Home Assistant reauthentication when Entergy rejects the password, so a bad password is not submitted on every poll.

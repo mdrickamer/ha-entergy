@@ -45,7 +45,7 @@ class EntergyLoginResult:
 
 
 class EntergyApiClient:
-    """Small async client for prod.entergy.mindgrb.io."""
+    """Small async client for the Entergy mobile API."""
 
     def __init__(
         self,

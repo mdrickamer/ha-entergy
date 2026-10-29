@@ -168,6 +168,7 @@ Sensitive values such as username, password, email, account number, authorizatio
 ## Known Limitations
 
 - Additional login challenges, such as MFA or unsupported next actions, may not work yet.
+- Usage data is requested from `https://mobileapp.api-prod.entergy.com/api` with app version 3.63.0. That host has not been confirmed with a live Entergy login yet.
 - The integration depends on Entergy service behavior, which can change without notice.
 - Energy Dashboard totals are derived from interval data and local persistent storage.
 
@@ -179,7 +180,7 @@ Validate Python syntax locally:
 python -m compileall custom_components/entergy_mobile
 ```
 
-Run the test suite (it mocks every HTTP call and must not contact Entergy):
+Run the test suite (it mocks every HTTP call and must not contact `mobileapp.api-prod.entergy.com` or `prod.entergy.mindgrb.io`):
 
 ```bash
 pip install -r requirements_test.txt

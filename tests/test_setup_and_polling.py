@@ -37,6 +37,29 @@ def _reauth_flows(hass, entry_id: str) -> list[dict]:
     ]
 
 
+async def test_requests_use_the_mobile_api_host(hass, entergy_api) -> None:
+    """Login reports app version 3.63.0 and does not send a platform header."""
+    await async_setup_entry(hass, make_entry())
+
+    assert entergy_api.seen
+    for _method, url in entergy_api.seen:
+        assert url.startswith("https://mobileapp.api-prod.entergy.com/api")
+        assert "mindgrb" not in url.lower()
+
+    logins = [call for call in entergy_api.calls if call["url"].endswith("/login")]
+    assert logins
+    assert logins[0]["params"]["appVersion"] == "3.63.0"
+    assert "platform" not in logins[0]["params"]
+    header_names = {str(name).lower() for name in (logins[0]["headers"] or {})}
+    assert "platform" not in header_names
+
+    usage = [call for call in entergy_api.calls if "weeklyusage" in call["url"]]
+    assert usage
+    assert usage[0]["params"]["view"] == "day"
+    assert "startDate" in usage[0]["params"]
+    assert "platform" not in usage[0]["params"]
+
+
 async def test_auth_failure_stops_polling_and_starts_reauth(hass, entergy_api, caplog) -> None:
     """A rejected password starts reauth and does not schedule another poll."""
     caplog.set_level(logging.DEBUG, logger="custom_components.entergy_mobile")
@@ -105,7 +128,7 @@ async def test_timeout_is_retried(hass, entergy_api) -> None:
     entry = await async_setup_entry(hass, make_entry())
     coordinator = _coordinator(hass, entry)
     entergy_api.usage_exception = TimeoutError(
-        "timed out contacting https://prod.entergy.mindgrb.io/api/accounts/"
+        "timed out contacting https://mobileapp.api-prod.entergy.com/api/accounts/"
         f"{ACCOUNT_ID}/weeklyusage for {USERNAME}"
     )
 
@@ -124,7 +147,7 @@ async def test_timeout_is_retried(hass, entergy_api) -> None:
 @pytest.mark.parametrize(
     "exc",
     [
-        aiohttp.ClientConnectionError("connection refused to prod.entergy.mindgrb.io"),
+        aiohttp.ClientConnectionError("connection refused to mobileapp.api-prod.entergy.com"),
         TimeoutError("timed out"),
     ],
 )

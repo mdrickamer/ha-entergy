@@ -11,12 +11,12 @@ CONF_LANGUAGE: Final = "language"
 CONF_SCAN_INTERVAL_SECONDS: Final = "scan_interval_seconds"
 
 DEFAULT_LANGUAGE: Final = "en"
-DEFAULT_APP_VERSION: Final = "3.59.0"
+DEFAULT_APP_VERSION: Final = "3.63.0"
 DEFAULT_SCAN_INTERVAL_SECONDS: Final = 3600
 MIN_SCAN_INTERVAL_SECONDS: Final = 900
 MAX_SCAN_INTERVAL_SECONDS: Final = 86400
 
-BASE_URL: Final = "https://prod.entergy.mindgrb.io/api"
+BASE_URL: Final = "https://mobileapp.api-prod.entergy.com/api"
 APP_CONFIG_URL: Final = f"{BASE_URL}/app"
 LOGIN_URL: Final = f"{BASE_URL}/login"
 LOGOUT_URL: Final = f"{BASE_URL}/logout"

@@ -8,7 +8,11 @@ from __future__ import annotations
 import aiohttp
 import pytest
 
-from tests.common import EntergyFakeApi
+from custom_components.entergy_mobile.const import BASE_URL
+from tests.common import OLD_HOST, EntergyFakeApi
+
+# Requests to either real host must stay inside the fake. pytest-socket is a second barrier.
+_REAL_ENTERGY_HOSTS = (OLD_HOST, "mobileapp.api-prod.entergy.com", "mindgrb.io")
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
@@ -27,11 +31,13 @@ def entergy_api(monkeypatch: pytest.MonkeyPatch):
 
     async def _request(self, method, url, *args, **kwargs):
         url_text = str(url)
-        if "mindgrb.io" not in url_text and "entergy" not in url_text.lower():
-            return await original(self, method, url, *args, **kwargs)
-        return api.dispatch(method, url_text, kwargs)
+        lowered = url_text.lower()
+        if any(host in lowered for host in _REAL_ENTERGY_HOSTS):
+            return api.dispatch(method, url_text, kwargs)
+        return await original(self, method, url, *args, **kwargs)
 
     monkeypatch.setattr(aiohttp.ClientSession, "_request", _request)
     yield api
     for _method, url in api.seen:
-        assert url.startswith("https://prod.entergy.mindgrb.io/")
+        assert url.startswith(BASE_URL)
+        assert "mindgrb" not in url.lower()

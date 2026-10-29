@@ -9,7 +9,12 @@ import json
 import re
 from typing import Any
 
-from custom_components.entergy_mobile.const import CONF_ACCOUNT_ID, CONF_LANGUAGE, CONF_SCAN_INTERVAL_SECONDS
+from custom_components.entergy_mobile.const import (
+    BASE_URL,
+    CONF_ACCOUNT_ID,
+    CONF_LANGUAGE,
+    CONF_SCAN_INTERVAL_SECONDS,
+)
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -27,11 +32,17 @@ CLIENT_ID = "client-secret-id"
 ADDRESS = "123 Secret Maple Street"
 BODY_MARKER = "outage-detail-marker"
 
-APP_RE = re.compile(r"https://prod\.entergy\.mindgrb\.io/api/app(?:\?|$)")
-LOGIN_RE = re.compile(r"https://prod\.entergy\.mindgrb\.io/api/login(?:\?|$)")
-LOGOUT_RE = re.compile(r"https://prod\.entergy\.mindgrb\.io/api/logout(?:\?|$)")
-ACCOUNTS_RE = re.compile(r"https://prod\.entergy\.mindgrb\.io/api/accounts(?:\?|$)")
-USAGE_RE = re.compile(r"https://prod\.entergy\.mindgrb\.io/api/accounts/.+/weeklyusage")
+def _endpoint(path: str) -> re.Pattern[str]:
+    """Match one API path on the configured base URL, with or without a query."""
+    return re.compile(re.escape(BASE_URL) + path)
+
+
+APP_RE = _endpoint(r"/app(?:\?|$)")
+LOGIN_RE = _endpoint(r"/login(?:\?|$)")
+LOGOUT_RE = _endpoint(r"/logout(?:\?|$)")
+ACCOUNTS_RE = _endpoint(r"/accounts(?:\?|$)")
+USAGE_RE = _endpoint(r"/accounts/.+/weeklyusage")
+OLD_HOST = "prod.entergy.mindgrb.io"
 
 SECRETS = (PASSWORD, NEW_PASSWORD, USERNAME, ACCOUNT_ID, OTHER_ACCOUNT_ID, TOKEN, CLIENT_ID, ADDRESS)
 
@@ -137,13 +148,24 @@ class EntergyFakeApi:
         self.app_calls = 0
         self.usage_urls: list[str] = []
         self.seen: list[tuple[str, str]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def dispatch(self, method: str, url: str, kwargs: dict[str, Any]) -> FakeResponse:
         """Route one mocked Entergy request. Anything else is a test failure."""
         method = method.upper()
         self.seen.append((method, url))
-        if "mindgrb.io" not in url:
-            raise AssertionError(f"Test tried to contact a non-Entergy host: {method} {url}")
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "params": kwargs.get("params"),
+                "headers": kwargs.get("headers"),
+            }
+        )
+        if "mindgrb" in url.lower():
+            raise AssertionError(f"Refusing the old Entergy host: {method} {url}")
+        if not url.startswith(BASE_URL):
+            raise AssertionError(f"Refusing unexpected Entergy URL: {method} {url}")
         if method == "GET" and APP_RE.match(url):
             return self.app_callback(url, **kwargs)
         if method == "POST" and LOGIN_RE.match(url):

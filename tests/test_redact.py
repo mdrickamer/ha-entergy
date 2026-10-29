@@ -1,15 +1,35 @@
 """Redaction unit tests."""
 
+import pytest
+
 from custom_components.entergy_mobile.const import (
+    BASE_URL,
+    DEFAULT_APP_VERSION,
     DEFAULT_SCAN_INTERVAL_SECONDS,
+    LOGIN_URL,
     MAX_SCAN_INTERVAL_SECONDS,
     MIN_SCAN_INTERVAL_SECONDS,
     friendly_account_name,
     normalize_scan_interval_seconds,
 )
 from custom_components.entergy_mobile.redact import REDACTED, redact_text
+from tests.common import ACCOUNT_ID, ADDRESS, CLIENT_ID, OLD_HOST, PASSWORD, TOKEN, USERNAME, EntergyFakeApi
 
-from tests.common import ACCOUNT_ID, ADDRESS, CLIENT_ID, PASSWORD, TOKEN, USERNAME
+
+def test_api_host_and_app_version() -> None:
+    """The client uses the official mobile API host and the current app version."""
+    assert BASE_URL == "https://mobileapp.api-prod.entergy.com/api"
+    assert "mindgrb" not in BASE_URL
+    assert LOGIN_URL == f"{BASE_URL}/login"
+    assert DEFAULT_APP_VERSION == "3.63.0"
+
+
+def test_fake_api_refuses_the_old_host() -> None:
+    """The old Mindgrub host is rejected inside the fake and is not a passthrough."""
+    api = EntergyFakeApi()
+    with pytest.raises(AssertionError, match="old Entergy host"):
+        api.dispatch("GET", f"https://{OLD_HOST}/api/app", {})
+    assert api.seen
 
 
 def test_poll_interval_bounds() -> None:
