@@ -42,6 +42,10 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+          # This fork does not have GitHub Issues enabled and has no topics.
+          # Those are repository settings, not integration files. The remaining
+          # checks still cover the manifest, brands, and hacs.json.
+          ignore: issues topics
 
   hassfest:
     name: Hassfest
