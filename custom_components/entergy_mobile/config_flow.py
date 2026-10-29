@@ -6,7 +6,11 @@ import logging
 from typing import Any
 
 from aiohttp import ClientError
-import voluptuous as vol
+
+try:
+    import probatio as vol
+except ImportError:  # pragma: no cover - Home Assistant before probatio
+    import voluptuous as vol  # type: ignore[no-redef]
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
@@ -24,7 +28,10 @@ from .const import (
     DOMAIN,
     MAX_SCAN_INTERVAL_SECONDS,
     MIN_SCAN_INTERVAL_SECONDS,
+    friendly_account_name,
+    normalize_scan_interval_seconds,
 )
+from .redact import redact_text
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +52,10 @@ def _user_schema(default_language: str = DEFAULT_LANGUAGE) -> vol.Schema:
             ),
         }
     )
+
+
+def _reauth_schema() -> vol.Schema:
+    return vol.Schema({vol.Required(CONF_PASSWORD): str})
 
 
 def _extract_accounts(raw: Any) -> list[dict[str, Any]]:
@@ -84,12 +95,12 @@ def _account_id(account: dict[str, Any]) -> str | None:
 
 
 def _account_label(account: dict[str, Any]) -> str:
-    account_id = _account_id(account) or "Unknown"
+    account_identifier = _account_id(account) or "Unknown"
     for key in ("nickname", "name", "serviceAddress", "address", "premiseAddress"):
         value = account.get(key)
         if value:
-            return f"{account_id} - {value}"
-    return account_id
+            return f"{account_identifier} - {value}"
+    return account_identifier
 
 
 async def _validate_and_fetch_accounts(
@@ -97,6 +108,7 @@ async def _validate_and_fetch_accounts(
     username: str,
     password: str,
     language: str,
+    extra_secrets: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     session = async_get_clientsession(hass)
     client = EntergyApiClient(
@@ -104,6 +116,7 @@ async def _validate_and_fetch_accounts(
         username=username,
         password=password,
         language=language,
+        extra_secrets=extra_secrets,
     )
     await client.async_initialize()
     await client.async_login()
@@ -133,19 +146,20 @@ class EntergyMobileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             accounts = await _validate_and_fetch_accounts(self.hass, username, password, language)
         except EntergyMfaRequired as err:
-            _LOGGER.debug("Entergy setup requires unsupported MFA step: %s", err)
+            _LOGGER.debug("Entergy setup requires unsupported MFA step: %s", redact_text(err))
             errors["base"] = "mfa_required"
             return self.async_show_form(step_id="user", data_schema=_user_schema(language), errors=errors)
         except EntergyAuthError as err:
-            _LOGGER.debug("Entergy setup authentication failed: %s", err)
+            _LOGGER.debug("Entergy setup authentication failed: %s", redact_text(err))
             errors["base"] = "invalid_auth"
             return self.async_show_form(step_id="user", data_schema=_user_schema(language), errors=errors)
-        except (EntergyApiError, ClientError) as err:
-            _LOGGER.debug("Entergy setup connection/API failed: %s", err)
+        except (EntergyApiError, ClientError, TimeoutError) as err:
+            _LOGGER.debug("Entergy setup connection/API failed: %s", redact_text(err))
             errors["base"] = "cannot_connect"
             return self.async_show_form(step_id="user", data_schema=_user_schema(language), errors=errors)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.exception("Unexpected Entergy setup error: %s", err)
+            _LOGGER.error("Unexpected Entergy setup error")
+            _LOGGER.debug("Unexpected Entergy setup detail: %s", redact_text(err))
             errors["base"] = "unknown"
             return self.async_show_form(step_id="user", data_schema=_user_schema(language), errors=errors)
 
@@ -204,38 +218,97 @@ class EntergyMobileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
 
         return self.async_create_entry(
-            title=f"Entergy {account_id}",
+            title=friendly_account_name(account_id),
             data=data,
             options={CONF_SCAN_INTERVAL_SECONDS: DEFAULT_SCAN_INTERVAL_SECONDS},
+        )
+
+    async def async_step_reauth(self, entry_data: dict[str, Any]):
+        """Start reauthentication for an existing entry."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
+        """Ask for the current password and keep the existing entry."""
+        errors: dict[str, str] = {}
+        entry = self._get_reauth_entry()
+        username = entry.data[CONF_USERNAME]
+        language = entry.data.get(CONF_LANGUAGE, DEFAULT_LANGUAGE)
+        account_id = str(entry.data[CONF_ACCOUNT_ID])
+
+        if user_input is not None:
+            password = user_input[CONF_PASSWORD]
+            try:
+                accounts = await _validate_and_fetch_accounts(
+                    self.hass,
+                    username,
+                    password,
+                    language,
+                    extra_secrets=(account_id, username),
+                )
+            except EntergyMfaRequired as err:
+                _LOGGER.debug("Entergy reauth requires unsupported MFA step: %s", redact_text(err))
+                errors["base"] = "mfa_required"
+            except EntergyAuthError as err:
+                _LOGGER.debug("Entergy reauth authentication failed: %s", redact_text(err))
+                errors["base"] = "invalid_auth"
+            except (EntergyApiError, ClientError, TimeoutError) as err:
+                _LOGGER.debug("Entergy reauth connection/API failed: %s", redact_text(err))
+                errors["base"] = "cannot_connect"
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("Unexpected Entergy reauth error")
+                _LOGGER.debug("Unexpected Entergy reauth detail: %s", redact_text(err))
+                errors["base"] = "unknown"
+            else:
+                known_ids = {identifier for account in accounts if (identifier := _account_id(account))}
+                if known_ids and account_id not in known_ids:
+                    errors["base"] = "account_missing"
+                else:
+                    self.hass.config_entries.async_update_entry(
+                        entry,
+                        data={**entry.data, CONF_PASSWORD: password},
+                    )
+                    if not entry.update_listeners:
+                        self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                    return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=_reauth_schema(),
+            description_placeholders={"username": username},
+            errors=errors,
         )
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
         """Return options flow."""
-        return EntergyMobileOptionsFlow(config_entry)
+        return EntergyMobileOptionsFlow()
 
 
 class EntergyMobileOptionsFlow(config_entries.OptionsFlow):
     """Options flow for Entergy."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._config_entry = config_entry
-
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         """Manage options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            interval = normalize_scan_interval_seconds(user_input.get(CONF_SCAN_INTERVAL_SECONDS))
+            return self.async_create_entry(
+                title="",
+                data={CONF_SCAN_INTERVAL_SECONDS: interval},
+            )
 
+        current = normalize_scan_interval_seconds(
+            self.config_entry.options.get(
+                CONF_SCAN_INTERVAL_SECONDS,
+                DEFAULT_SCAN_INTERVAL_SECONDS,
+            )
+        )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Optional(
                         CONF_SCAN_INTERVAL_SECONDS,
-                        default=self._config_entry.options.get(
-                            CONF_SCAN_INTERVAL_SECONDS,
-                            DEFAULT_SCAN_INTERVAL_SECONDS,
-                        ),
+                        default=current,
                     ): vol.All(
                         vol.Coerce(int),
                         vol.Range(

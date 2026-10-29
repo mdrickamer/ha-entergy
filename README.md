@@ -114,6 +114,8 @@ ha-entergy/
 
 The integration stores the access token only in memory. Home Assistant stores the credentials in the config entry so the integration can log in again after restart.
 
+If Entergy later rejects the password, polling stops and Home Assistant asks you to reauthenticate. Enter the new password there. The existing entry, sensors, and energy statistics stay in place. Temporary connection problems are retried and do not ask for the password again.
+
 ## Energy Dashboard
 
 Use these sensors in the Home Assistant Energy Dashboard:
@@ -132,7 +134,7 @@ Important behavior:
 
 ## Options
 
-The data update interval can be changed from the integration options. Use a lower value for frequent pulls when you want the usage sensors to refresh more often.
+The data update interval can be changed from the integration options.
 
 Default:
 
@@ -143,8 +145,10 @@ Default:
 Allowed range:
 
 ```text
-60 to 86400 seconds
+900 to 86400 seconds
 ```
+
+Intervals below 900 seconds, including values saved by older versions of this integration, are raised to 900 seconds.
 
 ## Debug Logging
 
@@ -159,11 +163,12 @@ logger:
 
 Restart Home Assistant, reproduce the issue, then check Settings, System, Logs.
 
-Sensitive values such as username, password, authorization headers, client ID, and access tokens should not be logged.
+Sensitive values such as username, password, email, account number, authorization headers, client ID, and access tokens are not written to logs. API response bodies are logged only at debug level, and only after those values are redacted.
 
 ## Known Limitations
 
 - Additional login challenges, such as MFA or unsupported next actions, may not work yet.
+- Usage data is requested from `https://mobileapp.api-prod.entergy.com/api` with app version 3.63.0. That host has not been confirmed with a live Entergy login yet.
 - The integration depends on Entergy service behavior, which can change without notice.
 - Energy Dashboard totals are derived from interval data and local persistent storage.
 
@@ -173,6 +178,13 @@ Validate Python syntax locally:
 
 ```bash
 python -m compileall custom_components/entergy_mobile
+```
+
+Run the test suite (it mocks every HTTP call and must not contact `mobileapp.api-prod.entergy.com` or `prod.entergy.mindgrb.io`):
+
+```bash
+pip install -r requirements_test.txt
+pytest
 ```
 
 For this workspace, if you are already inside the integration folder:

@@ -4,16 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import inspect
 import logging
 from typing import Any
 
+import aiohttp
+
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import EntergyApiClient, EntergyApiError, EntergyAuthError
-from .const import DEFAULT_SCAN_INTERVAL_SECONDS, DOMAIN, STORAGE_KEY_PREFIX, STORAGE_VERSION
+from .api import EntergyApiClient, EntergyApiError, EntergyAuthError, EntergyMfaRequired
+from .const import (
+    DEFAULT_SCAN_INTERVAL_SECONDS,
+    DOMAIN,
+    MAX_SCAN_INTERVAL_SECONDS,
+    STORAGE_KEY_PREFIX,
+    STORAGE_VERSION,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -288,6 +299,12 @@ class EntergyUsageStore:
         return bool(to_delete)
 
 
+_COORDINATOR_ACCEPTS_CONFIG_ENTRY = "config_entry" in inspect.signature(
+    DataUpdateCoordinator.__init__
+).parameters
+_MAX_BACKOFF_STEPS = 6
+
+
 class EntergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator for Entergy usage polling."""
 
@@ -297,13 +314,20 @@ class EntergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         client: EntergyApiClient,
         account_id: str,
         entry_id: str,
+        config_entry: ConfigEntry | None = None,
         scan_interval_seconds: int = DEFAULT_SCAN_INTERVAL_SECONDS,
     ) -> None:
+        self._configured_interval = timedelta(seconds=scan_interval_seconds)
+        self._transient_failures = 0
+        coordinator_kwargs: dict[str, Any] = {}
+        if _COORDINATOR_ACCEPTS_CONFIG_ENTRY:
+            coordinator_kwargs["config_entry"] = config_entry
         super().__init__(
             hass,
             logger=_LOGGER,
-            name=f"{DOMAIN}_{account_id}",
-            update_interval=timedelta(seconds=scan_interval_seconds),
+            name=DOMAIN,
+            update_interval=self._configured_interval,
+            **coordinator_kwargs,
         )
         self._client = client
         self._account_id = account_id
@@ -313,19 +337,62 @@ class EntergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Load persistent state."""
         await self._usage_store.async_load()
 
+    def _stop_polling_for_auth_failure(self) -> None:
+        """Stop scheduled polls so a rejected password is not retried."""
+        self._transient_failures = 0
+        self.update_interval = None
+
+    def _apply_backoff(self) -> None:
+        """Delay the next poll after a transient failure."""
+        self._transient_failures += 1
+        multiplier = 2 ** min(self._transient_failures, _MAX_BACKOFF_STEPS)
+        delay = min(
+            self._configured_interval.total_seconds() * multiplier,
+            float(MAX_SCAN_INTERVAL_SECONDS),
+        )
+        self.update_interval = timedelta(seconds=delay)
+        _LOGGER.debug("Scheduling next Entergy poll in %s seconds", int(delay))
+
+    def _reset_backoff(self) -> None:
+        """Restore the configured poll interval after a successful update."""
+        self._transient_failures = 0
+        if self.update_interval != self._configured_interval:
+            self.update_interval = self._configured_interval
+
     async def _async_update_data(self) -> dict[str, Any]:
         try:
             payload = await self._client.async_fetch_current_usage(self._account_id)
-            parsed = parse_usage_payload(payload)
-            if not parsed:
-                raise UpdateFailed("Unexpected weeklyusage payload")
-
-            totals = await self._usage_store.async_process(parsed.pop("hourly_records", []))
-            parsed.update(totals)
-            parsed["last_update"] = _utcnow().isoformat()
-            return parsed
-
-        except (EntergyAuthError, EntergyApiError) as err:
+        except EntergyMfaRequired as err:
+            self._stop_polling_for_auth_failure()
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except EntergyAuthError as err:
+            self._stop_polling_for_auth_failure()
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except EntergyApiError as err:
+            self._apply_backoff()
             raise UpdateFailed(str(err)) from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Entergy update network error: %s", self._client.redact(err))
+            self._apply_backoff()
+            raise UpdateFailed("Could not reach Entergy") from None
         except Exception as err:  # noqa: BLE001
-            raise UpdateFailed(f"Unexpected error: {err}") from err
+            _LOGGER.debug("Unexpected Entergy update error: %s", self._client.redact(err))
+            self._apply_backoff()
+            raise UpdateFailed("Unexpected error updating Entergy data") from None
+
+        try:
+            parsed = parse_usage_payload(payload)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Entergy payload parse error: %s", self._client.redact(err))
+            self._apply_backoff()
+            raise UpdateFailed("Unexpected Entergy usage payload") from None
+
+        if not parsed:
+            self._apply_backoff()
+            raise UpdateFailed("Unexpected Entergy usage payload")
+
+        totals = await self._usage_store.async_process(parsed.pop("hourly_records", []))
+        parsed.update(totals)
+        parsed["last_update"] = _utcnow().isoformat()
+        self._reset_backoff()
+        return parsed
