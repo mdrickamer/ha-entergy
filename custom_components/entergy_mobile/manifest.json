@@ -5,6 +5,7 @@
     "@daviddelahoz"
   ],
   "config_flow": true,
+  "after_dependencies": ["recorder"],
   "dependencies": [],
   "documentation": "https://github.com/daviddelahoz/ha-entergy",
   "integration_type": "service",
@@ -14,5 +15,5 @@
     "custom_components.entergy_mobile"
   ],
   "requirements": [],
-  "version": "0.2.1"
+  "version": "0.3.0"
 }

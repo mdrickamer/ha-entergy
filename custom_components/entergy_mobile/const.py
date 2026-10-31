@@ -30,6 +30,12 @@ ATTR_ACCOUNT_ID: Final = "account_id"
 ATTR_LAST_UPDATE: Final = "last_update"
 ATTR_LAST_INTERVAL: Final = "last_interval"
 ATTR_IS_ESTIMATED: Final = "is_estimated"
+ATTR_HOUR_START: Final = "hour_start"
+
+# Re-import this many days of each weeklyusage response so Entergy can correct
+# hours it has already sent. Older imported hours stay in the recorder.
+STATISTICS_WINDOW_DAYS: Final = 4
+ACCOUNT_TIME_ZONE: Final = "America/Chicago"
 
 
 def normalize_scan_interval_seconds(value: Any) -> int:

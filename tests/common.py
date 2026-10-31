@@ -140,6 +140,7 @@ class EntergyFakeApi:
         self.accepted_passwords = {PASSWORD}
         self.usage_status = 200
         self.usage_exception: Exception | None = None
+        self.usage_body: dict[str, Any] | None = None
         self.app_status = 200
         self.app_exception: Exception | None = None
         self.accounts_payload: dict[str, Any] | None = None
@@ -218,7 +219,8 @@ class EntergyFakeApi:
             raise self.usage_exception
         if self.usage_status >= 400:
             return FakeResponse(self.usage_status, secret_body())
-        return FakeResponse(200, usage_payload())
+        body = self.usage_body if self.usage_body is not None else usage_payload()
+        return FakeResponse(200, body)
 
 
 def assert_no_secrets(text: str) -> None:

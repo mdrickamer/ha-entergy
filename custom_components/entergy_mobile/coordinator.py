@@ -25,6 +25,11 @@ from .const import (
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
 )
+from .statistics import (
+    async_import_hourly_statistics,
+    interval_is_provisional,
+    latest_finalized_hour,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +42,7 @@ class HourlyUsage:
     usage: float
     cost: float | None
     is_estimated: bool
+    is_provisional: bool = False
 
 
 def _parse_iso_z(value: str) -> datetime:
@@ -121,12 +127,14 @@ def extract_hourly_usage(payload: dict[str, Any]) -> list[HourlyUsage]:
             if not isinstance(timestamp, str) or usage is None:
                 continue
             cost = _safe_float(hourly.get("cost"))
+            is_estimated, is_provisional = interval_is_provisional(hourly)
             records.append(
                 HourlyUsage(
                     timestamp=timestamp,
                     usage=usage,
                     cost=cost,
-                    is_estimated=bool(hourly.get("isEstimated", False)),
+                    is_estimated=is_estimated,
+                    is_provisional=is_provisional,
                 )
             )
 
@@ -142,17 +150,20 @@ def parse_usage_payload(payload: dict[str, Any]) -> dict[str, Any]:
     monthly_electric = _safe_list(_get_path(data, "monthly", "electric"))
     weekly_electric = _safe_list(_get_path(data, "weekly", "electric"))
     hourly_records = extract_hourly_usage(payload)
-
-    latest_hour: HourlyUsage | None = hourly_records[-1] if hourly_records else None
+    latest = latest_finalized_hour(hourly_records)
 
     latest_day = None
     latest_day_records: list[HourlyUsage] = []
-    if hourly_records:
-        latest_day = _parse_iso_z(hourly_records[-1].timestamp).date()
+    parsed_hours: list[tuple[HourlyUsage, datetime]] = []
+    for record in hourly_records:
+        try:
+            parsed_hours.append((record, _parse_iso_z(record.timestamp)))
+        except ValueError:
+            continue
+    if parsed_hours:
+        latest_day = parsed_hours[-1][1].date()
         latest_day_records = [
-            record
-            for record in hourly_records
-            if _parse_iso_z(record.timestamp).date() == latest_day
+            record for record, moment in parsed_hours if moment.date() == latest_day
         ]
 
     latest_month_entry = monthly_electric[-1] if monthly_electric else {}
@@ -164,8 +175,8 @@ def parse_usage_payload(payload: dict[str, Any]) -> dict[str, Any]:
         month_to_date_cost = _safe_float(latest_month_entry.get("cost"))
         month_to_date_date = latest_month_entry.get("date")
 
-    latest_import = max(latest_hour.usage, 0.0) if latest_hour else None
-    latest_export = abs(min(latest_hour.usage, 0.0)) if latest_hour else None
+    latest_import = max(latest.usage, 0.0) if latest else None
+    latest_export = abs(min(latest.usage, 0.0)) if latest else None
 
     latest_day_net = round(sum(record.usage for record in latest_day_records), 3)
     latest_day_import = round(sum(max(record.usage, 0.0) for record in latest_day_records), 3)
@@ -183,12 +194,12 @@ def parse_usage_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "latest_day_import_kwh": latest_day_import if latest_day_records else None,
         "latest_day_export_kwh": latest_day_export if latest_day_records else None,
         "latest_day_cost": latest_day_cost if latest_day_records else None,
-        "latest_hour_timestamp": latest_hour.timestamp if latest_hour else None,
-        "latest_hour_net_kwh": round(latest_hour.usage, 3) if latest_hour else None,
+        "latest_hour_timestamp": latest.start.isoformat() if latest else None,
+        "latest_hour_net_kwh": round(latest.usage, 3) if latest else None,
         "latest_hour_import_kwh": round(latest_import, 3) if latest_import is not None else None,
         "latest_hour_export_kwh": round(latest_export, 3) if latest_export is not None else None,
-        "latest_hour_cost": round(latest_hour.cost, 2) if latest_hour and latest_hour.cost is not None else None,
-        "latest_hour_estimated": latest_hour.is_estimated if latest_hour else None,
+        "latest_hour_cost": round(latest.cost, 2) if latest and latest.cost is not None else None,
+        "latest_hour_estimated": latest.is_estimated if latest else None,
         "month_to_date_net_kwh": round(month_to_date_usage, 3) if month_to_date_usage is not None else None,
         "month_to_date_cost": round(month_to_date_cost, 2) if month_to_date_cost is not None else None,
         "month_to_date_date": month_to_date_date,
@@ -391,7 +402,14 @@ class EntergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._apply_backoff()
             raise UpdateFailed("Unexpected Entergy usage payload")
 
-        totals = await self._usage_store.async_process(parsed.pop("hourly_records", []))
+        hourly_records = parsed.pop("hourly_records", [])
+        await async_import_hourly_statistics(
+            self.hass,
+            self._account_id,
+            hourly_records,
+            currency=self.hass.config.currency,
+        )
+        totals = await self._usage_store.async_process(hourly_records)
         parsed.update(totals)
         parsed["last_update"] = _utcnow().isoformat()
         self._reset_backoff()
