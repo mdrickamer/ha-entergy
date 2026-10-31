@@ -28,24 +28,30 @@ This integration signs in with your Entergy account, lets you select an account 
 - Config flow setup from the Home Assistant UI
 - Account selection during setup
 - Cloud polling for Entergy usage data
-- Latest hour, latest day, last 7 days, and month-to-date usage sensors
+- Latest finalized hour, latest day, last 7 days, and month-to-date usage sensors
 - Cost sensors when cost data is returned by Entergy
-- Cumulative import and export energy sensors for the Home Assistant Energy Dashboard
+- Cumulative import and export energy sensors
+- Hourly grid-import statistics for the Home Assistant Energy Dashboard, stamped with the hour the energy was used
 - Diagnostics support with sensitive values redacted
 
 ## Sensors
 
-Energy Dashboard-friendly sensors:
+Energy Dashboard statistics (recommended):
+
+- `entergy_mobile:grid_import_<account>` — hourly grid consumption in kWh
+- `entergy_mobile:grid_import_cost_<account>` — hourly cost, only when Entergy sends it
+
+Compatibility sensors:
 
 - Imported Energy Total
 - Exported Energy Total
 
 Usage and cost sensors:
 
-- Latest Hour Net Usage
-- Latest Hour Import
-- Latest Hour Export
-- Latest Hour Cost
+- Latest Finalized Hour Net Usage
+- Latest Finalized Hour Import
+- Latest Finalized Hour Export
+- Latest Finalized Hour Cost
 - Latest Day Net Usage
 - Latest Day Import
 - Latest Day Export
@@ -55,7 +61,7 @@ Usage and cost sensors:
 - Month-to-Date Net Usage
 - Month-to-Date Cost
 - Tracked Hourly Intervals
-- Latest Hour Timestamp
+- Latest Finalized Hour Start
 
 ## Installation
 
@@ -99,6 +105,7 @@ ha-entergy/
       entity.py
       manifest.json
       sensor.py
+      statistics.py
       strings.json
       translations/
         en.json
@@ -118,19 +125,29 @@ If Entergy later rejects the password, polling stops and Home Assistant asks you
 
 ## Energy Dashboard
 
-Use these sensors in the Home Assistant Energy Dashboard:
+Entergy returns hourly intervals and finalizes them in blocks, roughly every 4 hours and about 5 hours behind real time. Hours that are not finalized yet come back as 0. Use the external statistic below for grid consumption so each bar stays on the hour the energy was used.
 
-- `Imported Energy Total` for grid consumption
-- `Exported Energy Total` for returned energy
+In Settings, Dashboards, Energy, set grid consumption to:
 
-The Entergy service returns interval usage data, not a lifetime meter reading. To make Energy Dashboard totals work, this integration stores seen hourly intervals in Home Assistant storage and only adds new import/export values to cumulative totals.
+```text
+entergy_mobile:grid_import_<account>
+```
 
-Important behavior:
+`<account>` is the account id with letters lowercased and any other character turned into an underscore. The statistic name shown in Home Assistant is `Entergy grid import ending XXXX`, and XXXX is only the last four characters of the account. The unit is kWh.
 
-- Totals start from the first successful integration run.
-- Historical data before setup is not backfilled.
-- Deleting the integration storage resets the cumulative totals.
-- If Entergy later revises an interval downward, the cumulative total is not reduced.
+When the usage payload includes an hourly cost, the integration also writes:
+
+```text
+entergy_mobile:grid_import_cost_<account>
+```
+
+That statistic uses the currency configured in Home Assistant. It is not created when Entergy does not send hourly cost.
+
+Each poll re-imports the last 4 days of the weekly usage response. The running sum continues from the last stored value before that window, so a corrected hour replaces the earlier value instead of being added again. The first successful poll fills in about 4 days. Later polls keep those hours and add new ones. Usage older than that first window is not backfilled, because the request itself only covers about a week.
+
+Switching the Energy dashboard from `Imported Energy Total` to this statistic starts the dashboard from the imported history. The bars already recorded for the old sensor are not moved over. The old sensor remains, with the same entity id, for anything else that reads it.
+
+`Imported Energy Total` and `Exported Energy Total` are still cumulative counters stored by the integration. They start at the first successful poll, they do not move downward when Entergy revises an hour, and deleting the integration storage resets them. Those counters are not what places the hourly bars.
 
 ## Options
 
@@ -170,7 +187,8 @@ Sensitive values such as username, password, email, account number, authorizatio
 - Additional login challenges, such as MFA or unsupported next actions, may not work yet.
 - Usage data is requested from `https://mobileapp.api-prod.entergy.com/api` with app version 3.63.0. That host has not been confirmed with a live Entergy login yet.
 - The integration depends on Entergy service behavior, which can change without notice.
-- Energy Dashboard totals are derived from interval data and local persistent storage.
+- Energy Dashboard hourly bars come from the external grid import statistic. `Imported Energy Total` remains a cumulative counter and does not by itself place usage in the hour it occurred.
+- The hourly statistic timestamp follows the `date` on each hourly interval. Values with a timezone, including the `Z` timestamps seen from this API, are converted to UTC. A value with no timezone is read as America/Chicago wall time.
 
 ## Development
 

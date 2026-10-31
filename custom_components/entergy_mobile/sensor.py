@@ -18,7 +18,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import get_coordinator
-from .const import ATTR_ACCOUNT_ID, ATTR_IS_ESTIMATED, ATTR_LAST_INTERVAL, ATTR_LAST_UPDATE, DOMAIN
+from .const import (
+    ATTR_ACCOUNT_ID,
+    ATTR_HOUR_START,
+    ATTR_IS_ESTIMATED,
+    ATTR_LAST_INTERVAL,
+    ATTR_LAST_UPDATE,
+    DOMAIN,
+)
 from .coordinator import EntergyDataUpdateCoordinator
 from .entity import EntergyEntity
 
@@ -49,28 +56,28 @@ SENSORS: tuple[EntergySensorEntityDescription, ...] = (
     ),
     EntergySensorEntityDescription(
         key="latest_hour_net_kwh",
-        name="Latest Hour Net Usage",
+        name="Latest Finalized Hour Net Usage",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         suggested_display_precision=3,
     ),
     EntergySensorEntityDescription(
         key="latest_hour_import_kwh",
-        name="Latest Hour Import",
+        name="Latest Finalized Hour Import",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         suggested_display_precision=3,
     ),
     EntergySensorEntityDescription(
         key="latest_hour_export_kwh",
-        name="Latest Hour Export",
+        name="Latest Finalized Hour Export",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         suggested_display_precision=3,
     ),
     EntergySensorEntityDescription(
         key="latest_hour_cost",
-        name="Latest Hour Cost",
+        name="Latest Finalized Hour Cost",
         native_unit_of_measurement="$",
         device_class=SensorDeviceClass.MONETARY,
         suggested_display_precision=2,
@@ -138,7 +145,7 @@ SENSORS: tuple[EntergySensorEntityDescription, ...] = (
     ),
     EntergySensorEntityDescription(
         key="latest_hour_timestamp",
-        name="Latest Hour Timestamp",
+        name="Latest Finalized Hour Start",
         device_class=SensorDeviceClass.TIMESTAMP,
     ),
 )
@@ -194,6 +201,8 @@ class EntergySensor(EntergyEntity, SensorEntity):
 
         if data.get("latest_hour_timestamp"):
             attrs[ATTR_LAST_INTERVAL] = data.get("latest_hour_timestamp")
+        if self.entity_description.key.startswith("latest_hour") and data.get("latest_hour_timestamp"):
+            attrs[ATTR_HOUR_START] = data.get("latest_hour_timestamp")
         if data.get("latest_hour_estimated") is not None:
             attrs[ATTR_IS_ESTIMATED] = data.get("latest_hour_estimated")
         if self.entity_description.key.startswith("latest_day"):
